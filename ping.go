@@ -1,63 +1,47 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
 
-type arrayFlags []string
+func getResponse(url string, timeout int, dataResponses map[string][]float64, noResponses map[string]int) {
 
-func (i *arrayFlags) String() string {
-	return "my string representation"
-}
-
-func (i *arrayFlags) Set(value string) error {
-	*i = append(*i, value)
-	return nil
-}
-
-var myFlags arrayFlags
-var dataResponses = map[string][]float64{}
-var noResponses = map[string]int{}
-
-func getResponse(url string, timeout int) {
-	mils := float64(timeout) / float64(1000)
 	start := time.Now()
-	result, err := http.Get(url)
-	if err != nil {
-		log.Fatal(err)
+	client := http.Client{
+		Timeout: time.Duration(timeout) * time.Second,
 	}
-	if time.Since(start).Seconds() > mils {
+	result, err := client.Get(url)
+	if err != nil {
 		noResponses[url] = noResponses[url] + 1
-		return
+		log.Fatal(err)
 	}
 	elapsed := time.Since(start).Seconds()
 	defer result.Body.Close()
 	s := fmt.Sprintf("%s %f", url, elapsed)
 	log.Println(s)
 	if result.StatusCode == http.StatusOK {
-		appendResponse(url, elapsed)
+		appendResponse(url, elapsed, dataResponses)
 	}
 }
 
-func appendResponse(url string, time float64) {
+func appendResponse(url string, time float64, dataResponses map[string][]float64) {
 	dataResponses[url] = append(dataResponses[url], time)
 }
 
-func httpRequest(c chan string) {
-	args := parseArgument(<-c)
-	url := args[0]
-	count, _ := strconv.Atoi(args[1])
-	timout, _ := strconv.Atoi(args[2])
+func httpRequest(urlChan chan string, dataResponses map[string][]float64,
+	noResponses map[string]int, generalValue []int) {
+
+	url := <-urlChan
+	count := generalValue[0]
+	timeout := generalValue[1]
 	i := 0
 	for i < count {
-		go getResponse(url, timout)
+		go getResponse(url, timeout, dataResponses, noResponses)
 		i++
 	}
 }
@@ -65,84 +49,56 @@ func httpRequest(c chan string) {
 func parseArgument(item string) []string {
 	return strings.Split(item, ",")
 }
-func Min(values []float64) (min float64, e error) {
+func findMinMaxAvg(values []float64) (min float64, max float64, avg float64) {
 	if len(values) == 0 {
-		return 0, errors.New("Cannot detect a minimum value in an empty slice")
+		return 0, 0, 0
 	}
 
 	min = values[0]
+	max = values[0]
+	var sum float64 = 0
 	for _, v := range values {
 		if v < min {
 			min = v
 		}
-	}
-
-	return min, nil
-}
-func Max(values []float64) (max float64, e error) {
-	if len(values) == 0 {
-		return 0, errors.New("Cannot detect a maximum value in an empty slice")
-	}
-
-	max = values[0]
-	for _, v := range values {
 		if v > max {
 			max = v
 		}
-	}
-
-	return max, nil
-}
-func Avg(values []float64) (avg float64, e error) {
-	if len(values) == 0 {
-		return 0, errors.New("Cannot detect a average value in an empty slice")
-	}
-
-	var sum float64 = 0
-	for _, v := range values {
 		sum = sum + v
 	}
 	var count = float64(len(values))
 	avg = sum / count
-	return avg, nil
+	return min, max, avg
 }
-func printMin() {
+
+func printMinMaxAvg(dataResponses map[string][]float64) {
 	for key, _ := range dataResponses {
-		min, _ := Min(dataResponses[key])
-		fmt.Println(key, min, " min")
+		min, max, avg := findMinMaxAvg(dataResponses[key])
+		fmt.Printf("url: %s, min: %f, max: %f, avg: %f \n", key, min, max, avg)
 
 	}
 }
-func printMax() {
-	for key, _ := range dataResponses {
-		min, _ := Max(dataResponses[key])
-		fmt.Println(key, min, " max")
 
-	}
-}
-func printAvg() {
-	for key, _ := range dataResponses {
-		min, _ := Avg(dataResponses[key])
-		fmt.Println(key, min, " avg")
-
-	}
-}
 func main() {
-	c := make(chan string)
-	flag.Var(&myFlags, "list1", "List of arguments.")
+	urlChan := make(chan string)
+	var dataResponses = map[string][]float64{}
+	var noResponses = map[string]int{}
+	url := flag.String("url", "", "url.")
+	count := flag.Int("count", 1, "count response.")
+	timeout := flag.Int("timeout", 1, "count response.")
 	flag.Parse()
+	var generalValue = []int{*count, *timeout}
+	inputValue := parseArgument(*url)
+
 	i := 0
-	for i < len(myFlags) {
-		go httpRequest(c)
-		c <- myFlags[i]
+	for i < len(inputValue) {
+		go httpRequest(urlChan, dataResponses, noResponses, generalValue)
+		urlChan <- inputValue[i]
 		i++
 	}
-	defer fmt.Println(dataResponses)
-	defer fmt.Println(noResponses)
-	defer printMin()
-	defer printMax()
-	defer printAvg()
-
+	time.Sleep(1 * time.Second)
+	fmt.Println(dataResponses)
+	printMinMaxAvg(dataResponses)
+	fmt.Println(noResponses)
 	fmt.Scanln()
-
 }
