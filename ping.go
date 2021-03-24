@@ -6,18 +6,27 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
-func getResponse(url string, timeout int, dataResponses map[string][]float64, noResponses map[string]int) {
+type inputDataStruct struct {
+	url           []string
+	count         int
+	timeOut       int
+	dataResponses map[string][]float64
+	noResponses   map[string]int
+}
 
+func getResponse(urlChan chan string, inputData inputDataStruct) {
+	url := <-urlChan
 	start := time.Now()
 	client := http.Client{
-		Timeout: time.Duration(timeout) * time.Second,
+		Timeout: time.Duration(inputData.timeOut) * time.Second,
 	}
 	result, err := client.Get(url)
 	if err != nil {
-		noResponses[url] = noResponses[url] + 1
+		inputData.noResponses[url] = inputData.noResponses[url] + 1
 		log.Fatal(err)
 	}
 	elapsed := time.Since(start).Seconds()
@@ -25,25 +34,33 @@ func getResponse(url string, timeout int, dataResponses map[string][]float64, no
 	s := fmt.Sprintf("%s %f", url, elapsed)
 	log.Println(s)
 	if result.StatusCode == http.StatusOK {
-		appendResponse(url, elapsed, dataResponses)
+		appendResponse(url, elapsed, inputData)
 	}
 }
 
-func appendResponse(url string, time float64, dataResponses map[string][]float64) {
-	dataResponses[url] = append(dataResponses[url], time)
+func appendResponse(url string, time float64, inputData inputDataStruct) {
+	inputData.dataResponses[url] = append(inputData.dataResponses[url], time)
 }
 
-func httpRequest(urlChan chan string, dataResponses map[string][]float64,
-	noResponses map[string]int, generalValue []int) {
-
-	url := <-urlChan
-	count := generalValue[0]
-	timeout := generalValue[1]
-	i := 0
-	for i < count {
-		go getResponse(url, timeout, dataResponses, noResponses)
-		i++
+func httpRequest(inputData inputDataStruct) {
+	urlChan := make(chan string)
+	count := inputData.count
+	j := 0
+	var wg sync.WaitGroup
+	for i := range inputData.url {
+		for j < count {
+			wg.Add(1)
+			go func() {
+				getResponse(urlChan, inputData)
+				wg.Done()
+			}()
+			urlChan <- inputData.url[i]
+			j++
+		}
+		j = 0
 	}
+	wg.Wait()
+
 }
 
 func parseArgument(item string) []string {
@@ -80,25 +97,23 @@ func printMinMaxAvg(dataResponses map[string][]float64) {
 }
 
 func main() {
-	urlChan := make(chan string)
-	var dataResponses = map[string][]float64{}
-	var noResponses = map[string]int{}
 	url := flag.String("url", "", "url.")
 	count := flag.Int("count", 1, "count response.")
-	timeout := flag.Int("timeout", 1, "count response.")
+	timeout := flag.Int("timeout", 1, "timeout response.")
 	flag.Parse()
-	var generalValue = []int{*count, *timeout}
-	inputValue := parseArgument(*url)
-
-	i := 0
-	for i < len(inputValue) {
-		go httpRequest(urlChan, dataResponses, noResponses, generalValue)
-		urlChan <- inputValue[i]
-		i++
-	}
-	time.Sleep(1 * time.Second)
-	fmt.Println(dataResponses)
-	printMinMaxAvg(dataResponses)
-	fmt.Println(noResponses)
+	var inputData inputDataStruct
+	inputData.count = *count
+	inputData.timeOut = *timeout
+	inputData.dataResponses = map[string][]float64{}
+	inputData.noResponses = map[string]int{}
+	inputData.url = parseArgument(*url)
+	start := time.Now()
+	httpRequest(inputData)
+	fmt.Println("main")
+	elapsed := time.Since(start).Seconds()
+	fmt.Println(inputData.dataResponses)
+	printMinMaxAvg(inputData.dataResponses)
+	fmt.Printf("Total time: %f \n", elapsed)
+	fmt.Println(inputData.noResponses)
 	fmt.Scanln()
 }
